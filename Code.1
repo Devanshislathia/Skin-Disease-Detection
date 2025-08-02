@@ -1,0 +1,557 @@
+import os
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+import tensorflow as tf
+from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+
+# Load the Tabular Data
+tabular_data = pd.read_csv('/content/drive/MyDrive/skin/HAM10000_metadata.csv')
+
+# EDA: Frequency Distribution of Classes
+sns.countplot(x='dx', data=tabular_data)
+plt.xlabel('Disease', size=12)
+plt.ylabel('Frequency', size=12)
+plt.title('Frequency Distribution of Classes', size=16)
+plt.show()
+
+# EDA: Gender Distribution
+plt.pie(tabular_data['sex'].value_counts(), labels=tabular_data['sex'].value_counts().index, autopct="%.1f%%")
+plt.title('Gender of Patients', size=16)
+plt.show()
+
+# EDA: Histogram of Age
+sns.histplot(tabular_data['age'], kde=True)
+plt.title('Age Distribution of Patients', size=16)
+plt.show()
+
+# Define Directories
+image_dir_part_1 = '/content/drive/MyDrive/skin/HAM10000_images_part_1/'
+image_dir_part_2 = '/content/drive/MyDrive/skin/HAM10000_images_part_2/'
+
+def get_image_path(image_id):
+    part_1_path = os.path.join(image_dir_part_1, image_id + '.jpg')
+    part_2_path = os.path.join(image_dir_part_2, image_id + '.jpg')
+    if os.path.exists(part_1_path):
+        return part_1_path
+    elif os.path.exists(part_2_path):
+        return part_2_path
+    else:
+        raise FileNotFoundError(f"Image {image_id} not found in any directory.")
+
+# Add `path` and `label`
+image_labels = tabular_data[['image_id', 'dx']].copy()
+image_labels['path'] = image_labels['image_id'].apply(get_image_path)
+
+# Label Mapping
+label_mapping = {label: idx for idx, label in enumerate(image_labels['dx'].unique())}
+image_labels['label'] = image_labels['dx'].map(label_mapping)
+image_labels['label'] = image_labels['label'].astype(str)  # Convert labels to strings
+
+# Train-Test Split
+train_df, test_df = train_test_split(image_labels, test_size=0.2, stratify=image_labels['label'], random_state=1)
+
+# ImageDataGenerator
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=30,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    zoom_range=0.2,
+    horizontal_flip=True
+)
+test_datagen = ImageDataGenerator(rescale=1./255)
+
+train_generator = train_datagen.flow_from_dataframe(
+    train_df,
+    x_col='path',
+    y_col='label',
+    target_size=(224, 224),
+    batch_size=32,
+    class_mode='sparse'
+)
+
+validation_generator = test_datagen.flow_from_dataframe(
+    test_df,
+    x_col='path',
+    y_col='label',
+    target_size=(224, 224),
+    batch_size=32,
+    class_mode='sparse'
+)
+
+# Compute Class Weights
+class_weights = compute_class_weight('balanced', classes=np.unique(train_df['label']), y=train_df['label'])
+class_weights_dict = dict(enumerate(class_weights))
+
+# Transfer Learning with EfficientNetB0
+base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+base_model.trainable = False
+
+model = Sequential([
+    base_model,
+    GlobalAveragePooling2D(),
+    Dense(128, activation='relu'),
+    Dropout(0.3),
+    Dense(len(label_mapping), activation='softmax')
+])
+
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+
+model.summary()
+
+# Callbacks
+checkpoint = ModelCheckpoint(filepath='/content/drive/MyDrive/best_model_lazy.keras', monitor='val_accuracy', save_best_only=True, verbose=1)
+early_stopping = EarlyStopping(monitor='val_accuracy', patience=5, restore_best_weights=True, verbose=1)
+
+# Train the Model
+history = model.fit(
+    train_generator,
+    validation_data=validation_generator,
+    epochs=15,
+    class_weight=class_weights_dict,
+    callbacks=[checkpoint, early_stopping]
+)
+
+# Plot Accuracy and Loss
+plt.plot(history.history['accuracy'], label='Train Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.title('Model Accuracy')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.show()
+
+plt.plot(history.history['loss'], label='Train Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title('Model Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+# Evaluate the Model
+loss, accuracy = model.evaluate(validation_generator, verbose=2)
+print(f'Test Loss: {loss}, Test Accuracy: {accuracy}')
+
+# Save the Model
+model.save('/content/drive/MyDrive/skin/skin_cancer_detection_lazy_model_2.h5')
+
+     
+
+
+
+Found 8012 validated image filenames belonging to 7 classes.
+Found 2003 validated image filenames belonging to 7 classes.
+Model: "sequential_1"
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ Layer (type)                         ┃ Output Shape                ┃         Param # ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ efficientnetb0 (Functional)          │ (None, 7, 7, 1280)          │       4,049,571 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ global_average_pooling2d_1           │ (None, 1280)                │               0 │
+│ (GlobalAveragePooling2D)             │                             │                 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dense_2 (Dense)                      │ (None, 128)                 │         163,968 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dropout_1 (Dropout)                  │ (None, 128)                 │               0 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dense_3 (Dense)                      │ (None, 7)                   │             903 │
+└──────────────────────────────────────┴─────────────────────────────┴─────────────────┘
+ Total params: 4,214,442 (16.08 MB)
+ Trainable params: 164,871 (644.03 KB)
+ Non-trainable params: 4,049,571 (15.45 MB)
+Epoch 1/15
+/usr/local/lib/python3.10/dist-packages/keras/src/trainers/data_adapters/py_dataset_adapter.py:122: UserWarning: Your `PyDataset` class should call `super().__init__(**kwargs)` in its constructor. `**kwargs` can include `workers`, `use_multiprocessing`, `max_queue_size`. Do not pass these arguments to `fit()`, as they will be ignored.
+  self._warn_if_super_not_called()
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 7s/step - accuracy: 0.1535 - loss: 1.9179 
+Epoch 1: val_accuracy improved from -inf to 0.11133, saving model to /content/drive/MyDrive/best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 2160s 8s/step - accuracy: 0.1535 - loss: 1.9181 - val_accuracy: 0.1113 - val_loss: 1.9408
+Epoch 2/15
+250/251 ━━━━━━━━━━━━━━━━━━━━ 0s 800ms/step - accuracy: 0.1310 - loss: 1.9340
+Epoch 2: val_accuracy did not improve from 0.11133
+251/251 ━━━━━━━━━━━━━━━━━━━━ 263s 895ms/step - accuracy: 0.1309 - loss: 1.9341 - val_accuracy: 0.1098 - val_loss: 1.9493
+Epoch 3/15
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 764ms/step - accuracy: 0.1135 - loss: 1.9367
+Epoch 3: val_accuracy did not improve from 0.11133
+251/251 ━━━━━━━━━━━━━━━━━━━━ 254s 857ms/step - accuracy: 0.1135 - loss: 1.9368 - val_accuracy: 0.1113 - val_loss: 1.9433
+Epoch 4/15
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 762ms/step - accuracy: 0.1156 - loss: 1.9577
+Epoch 4: val_accuracy did not improve from 0.11133
+251/251 ━━━━━━━━━━━━━━━━━━━━ 278s 926ms/step - accuracy: 0.1156 - loss: 1.9576 - val_accuracy: 0.0514 - val_loss: 1.9448
+Epoch 5/15
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 754ms/step - accuracy: 0.0980 - loss: 1.9415
+Epoch 5: val_accuracy did not improve from 0.11133
+251/251 ━━━━━━━━━━━━━━━━━━━━ 243s 853ms/step - accuracy: 0.0980 - loss: 1.9415 - val_accuracy: 0.0514 - val_loss: 1.9464
+Epoch 6/15
+243/251 ━━━━━━━━━━━━━━━━━━━━ 6s 776ms/step - accuracy: 0.1000 - loss: 1.8765
+---------------------------------------------------------------------------
+KeyboardInterrupt                         Traceback (most recent call last)
+<ipython-input-2-0ca048661280> in <cell line: 117>()
+    115 
+    116 # Train the Model
+--> 117 history = model.fit(
+    118     train_generator,
+    119     validation_data=validation_generator,
+
+/usr/local/lib/python3.10/dist-packages/keras/src/utils/traceback_utils.py in error_handler(*args, **kwargs)
+    115         filtered_tb = None
+    116         try:
+--> 117             return fn(*args, **kwargs)
+    118         except Exception as e:
+    119             filtered_tb = _process_traceback_frames(e.__traceback__)
+
+/usr/local/lib/python3.10/dist-packages/keras/src/backend/tensorflow/trainer.py in fit(self, x, y, batch_size, epochs, verbose, callbacks, validation_split, validation_data, shuffle, class_weight, sample_weight, initial_epoch, steps_per_epoch, validation_steps, validation_batch_size, validation_freq)
+    318                 for step, iterator in epoch_iterator.enumerate_epoch():
+    319                     callbacks.on_train_batch_begin(step)
+--> 320                     logs = self.train_function(iterator)
+    321                     logs = self._pythonify_logs(logs)
+    322                     callbacks.on_train_batch_end(step, logs)
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/util/traceback_utils.py in error_handler(*args, **kwargs)
+    148     filtered_tb = None
+    149     try:
+--> 150       return fn(*args, **kwargs)
+    151     except Exception as e:
+    152       filtered_tb = _process_traceback_frames(e.__traceback__)
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/eager/polymorphic_function/polymorphic_function.py in __call__(self, *args, **kwds)
+    831 
+    832       with OptionalXlaContext(self._jit_compile):
+--> 833         result = self._call(*args, **kwds)
+    834 
+    835       new_tracing_count = self.experimental_get_tracing_count()
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/eager/polymorphic_function/polymorphic_function.py in _call(self, *args, **kwds)
+    876       # In this case we have not created variables on the first call. So we can
+    877       # run the first trace but we should fail if variables are created.
+--> 878       results = tracing_compilation.call_function(
+    879           args, kwds, self._variable_creation_config
+    880       )
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/eager/polymorphic_function/tracing_compilation.py in call_function(args, kwargs, tracing_options)
+    137   bound_args = function.function_type.bind(*args, **kwargs)
+    138   flat_inputs = function.function_type.unpack_inputs(bound_args)
+--> 139   return function._call_flat(  # pylint: disable=protected-access
+    140       flat_inputs, captured_inputs=function.captured_inputs
+    141   )
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/eager/polymorphic_function/concrete_function.py in _call_flat(self, tensor_inputs, captured_inputs)
+   1320         and executing_eagerly):
+   1321       # No tape is watching; skip to running the function.
+-> 1322       return self._inference_function.call_preflattened(args)
+   1323     forward_backward = self._select_forward_and_backward_functions(
+   1324         args,
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/eager/polymorphic_function/atomic_function.py in call_preflattened(self, args)
+    214   def call_preflattened(self, args: Sequence[core.Tensor]) -> Any:
+    215     """Calls with flattened tensor inputs and returns the structured output."""
+--> 216     flat_outputs = self.call_flat(*args)
+    217     return self.function_type.pack_output(flat_outputs)
+    218 
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/eager/polymorphic_function/atomic_function.py in call_flat(self, *args)
+    249         with record.stop_recording():
+    250           if self._bound_context.executing_eagerly():
+--> 251             outputs = self._bound_context.call_function(
+    252                 self.name,
+    253                 list(args),
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/eager/context.py in call_function(self, name, tensor_inputs, num_outputs)
+   1550     cancellation_context = cancellation.context()
+   1551     if cancellation_context is None:
+-> 1552       outputs = execute.execute(
+   1553           name.decode("utf-8"),
+   1554           num_outputs=num_outputs,
+
+/usr/local/lib/python3.10/dist-packages/tensorflow/python/eager/execute.py in quick_execute(op_name, num_outputs, inputs, attrs, ctx, name)
+     51   try:
+     52     ctx.ensure_initialized()
+---> 53     tensors = pywrap_tfe.TFE_Py_Execute(ctx._handle, device_name, op_name,
+     54                                         inputs, attrs, num_outputs)
+     55   except core._NotOkStatusException as e:
+
+KeyboardInterrupt: 
+
+import os
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+import tensorflow as tf
+from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+
+# Load the Tabular Data
+tabular_data = pd.read_csv('/content/drive/MyDrive/skin/HAM10000_metadata.csv')
+
+# EDA: Frequency Distribution of Classes
+sns.countplot(x='dx', data=tabular_data)
+plt.xlabel('Disease', size=12)
+plt.ylabel('Frequency', size=12)
+plt.title('Frequency Distribution of Classes', size=16)
+plt.show()
+
+# EDA: Gender Distribution
+plt.pie(tabular_data['sex'].value_counts(), labels=tabular_data['sex'].value_counts().index, autopct="%.1f%%")
+plt.title('Gender of Patients', size=16)
+plt.show()
+
+# EDA: Histogram of Age
+sns.histplot(tabular_data['age'], kde=True)
+plt.title('Age Distribution of Patients', size=16)
+plt.show()
+
+# Define Directories
+image_dir_part_1 = '/content/drive/MyDrive/skin/HAM10000_images_part_1/'
+image_dir_part_2 = '/content/drive/MyDrive/skin/HAM10000_images_part_2/'
+
+def get_image_path(image_id):
+    part_1_path = os.path.join(image_dir_part_1, image_id + '.jpg')
+    part_2_path = os.path.join(image_dir_part_2, image_id + '.jpg')
+    if os.path.exists(part_1_path):
+        return part_1_path
+    elif os.path.exists(part_2_path):
+        return part_2_path
+    else:
+        raise FileNotFoundError(f"Image {image_id} not found in any directory.")
+
+# Add `path` and `label`
+image_labels = tabular_data[['image_id', 'dx']].copy()
+image_labels['path'] = image_labels['image_id'].apply(get_image_path)
+
+# Label Mapping
+label_mapping = {label: idx for idx, label in enumerate(image_labels['dx'].unique())}
+image_labels['label'] = image_labels['dx'].map(label_mapping)
+image_labels['label'] = image_labels['label'].astype(str)  # Convert labels to strings
+
+# Train-Test Split
+train_df, test_df = train_test_split(image_labels, test_size=0.2, stratify=image_labels['label'], random_state=1)
+
+# ImageDataGenerator
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=40,
+    width_shift_range=0.3,
+    height_shift_range=0.3,
+    shear_range=0.2,
+    zoom_range=0.3,
+    horizontal_flip=True,
+    fill_mode='nearest'
+)
+test_datagen = ImageDataGenerator(rescale=1./255)
+
+train_generator = train_datagen.flow_from_dataframe(
+    train_df,
+    x_col='path',
+    y_col='label',
+    target_size=(224, 224),
+    batch_size=32,
+    class_mode='sparse'
+)
+
+validation_generator = test_datagen.flow_from_dataframe(
+    test_df,
+    x_col='path',
+    y_col='label',
+    target_size=(224, 224),
+    batch_size=32,
+    class_mode='sparse'
+)
+
+# Compute Class Weights
+class_weights = compute_class_weight('balanced', classes=np.unique(train_df['label']), y=train_df['label'])
+class_weights_dict = dict(enumerate(class_weights))
+
+# Transfer Learning with EfficientNetB0
+base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+base_model.trainable = True  # Enable fine-tuning
+
+model = Sequential([
+    base_model,
+    GlobalAveragePooling2D(),
+    Dense(256, activation='relu'),
+    Dropout(0.4),
+    Dense(128, activation='relu'),
+    Dropout(0.3),
+    Dense(len(label_mapping), activation='softmax')
+])
+
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+
+model.summary()
+
+# Callbacks
+checkpoint = ModelCheckpoint(filepath='best_model_lazy.keras', monitor='val_accuracy', save_best_only=True, verbose=1)
+early_stopping = EarlyStopping(monitor='val_accuracy', patience=5, restore_best_weights=True, verbose=1)
+lr_reduction = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, verbose=1)
+
+# Train the Model
+history = model.fit(
+    train_generator,
+    validation_data=validation_generator,
+    epochs=20,
+    class_weight=class_weights_dict,
+    callbacks=[checkpoint, early_stopping, lr_reduction]
+)
+
+# Plot Accuracy and Loss
+plt.plot(history.history['accuracy'], label='Train Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.title('Model Accuracy')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.show()
+
+plt.plot(history.history['loss'], label='Train Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title('Model Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+# Evaluate the Model
+loss, accuracy = model.evaluate(validation_generator, verbose=2)
+print(f'Test Loss: {loss}, Test Accuracy: {accuracy}')
+
+# Save the Model
+model.save('/content/drive/MyDrive/skin/skin_cancer_detection_lazy_model.h5')
+
+     
+
+
+
+Found 8012 validated image filenames belonging to 7 classes.
+Found 2003 validated image filenames belonging to 7 classes.
+Model: "sequential_2"
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ Layer (type)                         ┃ Output Shape                ┃         Param # ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ efficientnetb0 (Functional)          │ (None, 7, 7, 1280)          │       4,049,571 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ global_average_pooling2d_2           │ (None, 1280)                │               0 │
+│ (GlobalAveragePooling2D)             │                             │                 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dense_4 (Dense)                      │ (None, 256)                 │         327,936 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dropout_2 (Dropout)                  │ (None, 256)                 │               0 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dense_5 (Dense)                      │ (None, 128)                 │          32,896 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dropout_3 (Dropout)                  │ (None, 128)                 │               0 │
+├──────────────────────────────────────┼─────────────────────────────┼─────────────────┤
+│ dense_6 (Dense)                      │ (None, 7)                   │             903 │
+└──────────────────────────────────────┴─────────────────────────────┴─────────────────┘
+ Total params: 4,411,306 (16.83 MB)
+ Trainable params: 4,369,283 (16.67 MB)
+ Non-trainable params: 42,023 (164.16 KB)
+Epoch 1/20
+/usr/local/lib/python3.10/dist-packages/keras/src/trainers/data_adapters/py_dataset_adapter.py:122: UserWarning: Your `PyDataset` class should call `super().__init__(**kwargs)` in its constructor. `**kwargs` can include `workers`, `use_multiprocessing`, `max_queue_size`. Do not pass these arguments to `fit()`, as they will be ignored.
+  self._warn_if_super_not_called()
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 995ms/step - accuracy: 0.3095 - loss: 1.8900
+Epoch 1: val_accuracy improved from -inf to 0.01148, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 384s 1s/step - accuracy: 0.3099 - loss: 1.8894 - val_accuracy: 0.0115 - val_loss: 1.9956 - learning_rate: 1.0000e-04
+Epoch 2/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 804ms/step - accuracy: 0.5737 - loss: 1.2143
+Epoch 2: val_accuracy improved from 0.01148 to 0.01598, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 269s 906ms/step - accuracy: 0.5738 - loss: 1.2140 - val_accuracy: 0.0160 - val_loss: 2.0789 - learning_rate: 1.0000e-04
+Epoch 3/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 802ms/step - accuracy: 0.6143 - loss: 0.8961
+Epoch 3: val_accuracy improved from 0.01598 to 0.61558, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 233s 908ms/step - accuracy: 0.6144 - loss: 0.8960 - val_accuracy: 0.6156 - val_loss: 1.1527 - learning_rate: 1.0000e-04
+Epoch 4/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 802ms/step - accuracy: 0.6718 - loss: 0.7542
+Epoch 4: val_accuracy improved from 0.61558 to 0.71742, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 231s 901ms/step - accuracy: 0.6718 - loss: 0.7542 - val_accuracy: 0.7174 - val_loss: 0.7860 - learning_rate: 1.0000e-04
+Epoch 5/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 796ms/step - accuracy: 0.6833 - loss: 0.6812
+Epoch 5: val_accuracy improved from 0.71742 to 0.73290, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 232s 899ms/step - accuracy: 0.6833 - loss: 0.6813 - val_accuracy: 0.7329 - val_loss: 0.6901 - learning_rate: 1.0000e-04
+Epoch 6/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 797ms/step - accuracy: 0.6995 - loss: 0.6111
+Epoch 6: val_accuracy did not improve from 0.73290
+251/251 ━━━━━━━━━━━━━━━━━━━━ 261s 896ms/step - accuracy: 0.6994 - loss: 0.6111 - val_accuracy: 0.7229 - val_loss: 0.7380 - learning_rate: 1.0000e-04
+Epoch 7/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 804ms/step - accuracy: 0.7214 - loss: 0.5525
+Epoch 7: val_accuracy did not improve from 0.73290
+251/251 ━━━━━━━━━━━━━━━━━━━━ 262s 900ms/step - accuracy: 0.7214 - loss: 0.5526 - val_accuracy: 0.6875 - val_loss: 0.8115 - learning_rate: 1.0000e-04
+Epoch 8/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 806ms/step - accuracy: 0.7396 - loss: 0.5047
+Epoch 8: val_accuracy improved from 0.73290 to 0.73540, saving model to best_model_lazy.keras
+
+Epoch 8: ReduceLROnPlateau reducing learning rate to 4.999999873689376e-05.
+251/251 ━━━━━━━━━━━━━━━━━━━━ 235s 909ms/step - accuracy: 0.7395 - loss: 0.5047 - val_accuracy: 0.7354 - val_loss: 0.7152 - learning_rate: 1.0000e-04
+Epoch 9/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 817ms/step - accuracy: 0.7464 - loss: 0.4664
+Epoch 9: val_accuracy did not improve from 0.73540
+251/251 ━━━━━━━━━━━━━━━━━━━━ 262s 917ms/step - accuracy: 0.7464 - loss: 0.4664 - val_accuracy: 0.7344 - val_loss: 0.6994 - learning_rate: 5.0000e-05
+Epoch 10/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 822ms/step - accuracy: 0.7479 - loss: 0.4685
+Epoch 10: val_accuracy improved from 0.73540 to 0.74239, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 237s 926ms/step - accuracy: 0.7479 - loss: 0.4685 - val_accuracy: 0.7424 - val_loss: 0.7270 - learning_rate: 5.0000e-05
+Epoch 11/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 825ms/step - accuracy: 0.7658 - loss: 0.4339
+Epoch 11: val_accuracy improved from 0.74239 to 0.75836, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 254s 993ms/step - accuracy: 0.7658 - loss: 0.4339 - val_accuracy: 0.7584 - val_loss: 0.6608 - learning_rate: 5.0000e-05
+Epoch 12/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 829ms/step - accuracy: 0.7811 - loss: 0.3835
+Epoch 12: val_accuracy did not improve from 0.75836
+251/251 ━━━━━━━━━━━━━━━━━━━━ 238s 928ms/step - accuracy: 0.7811 - loss: 0.3835 - val_accuracy: 0.7529 - val_loss: 0.6825 - learning_rate: 5.0000e-05
+Epoch 13/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 810ms/step - accuracy: 0.7820 - loss: 0.3985
+Epoch 13: val_accuracy improved from 0.75836 to 0.76585, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 234s 913ms/step - accuracy: 0.7820 - loss: 0.3985 - val_accuracy: 0.7659 - val_loss: 0.6758 - learning_rate: 5.0000e-05
+Epoch 14/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 804ms/step - accuracy: 0.7835 - loss: 0.3623
+Epoch 14: val_accuracy improved from 0.76585 to 0.76735, saving model to best_model_lazy.keras
+
+Epoch 14: ReduceLROnPlateau reducing learning rate to 2.499999936844688e-05.
+251/251 ━━━━━━━━━━━━━━━━━━━━ 249s 972ms/step - accuracy: 0.7834 - loss: 0.3623 - val_accuracy: 0.7673 - val_loss: 0.6677 - learning_rate: 5.0000e-05
+Epoch 15/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 810ms/step - accuracy: 0.7934 - loss: 0.3374
+Epoch 15: val_accuracy improved from 0.76735 to 0.77334, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 247s 912ms/step - accuracy: 0.7934 - loss: 0.3374 - val_accuracy: 0.7733 - val_loss: 0.6575 - learning_rate: 2.5000e-05
+Epoch 16/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 800ms/step - accuracy: 0.7942 - loss: 0.3706
+Epoch 16: val_accuracy did not improve from 0.77334
+251/251 ━━━━━━━━━━━━━━━━━━━━ 231s 900ms/step - accuracy: 0.7942 - loss: 0.3705 - val_accuracy: 0.7693 - val_loss: 0.6631 - learning_rate: 2.5000e-05
+Epoch 17/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 816ms/step - accuracy: 0.7926 - loss: 0.3420
+Epoch 17: val_accuracy improved from 0.77334 to 0.77584, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 284s 988ms/step - accuracy: 0.7926 - loss: 0.3419 - val_accuracy: 0.7758 - val_loss: 0.6715 - learning_rate: 2.5000e-05
+Epoch 18/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 816ms/step - accuracy: 0.8067 - loss: 0.3226
+Epoch 18: val_accuracy improved from 0.77584 to 0.77933, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 245s 919ms/step - accuracy: 0.8067 - loss: 0.3226 - val_accuracy: 0.7793 - val_loss: 0.6180 - learning_rate: 2.5000e-05
+Epoch 19/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 805ms/step - accuracy: 0.8163 - loss: 0.2826
+Epoch 19: val_accuracy did not improve from 0.77933
+251/251 ━━━━━━━━━━━━━━━━━━━━ 274s 969ms/step - accuracy: 0.8163 - loss: 0.2827 - val_accuracy: 0.7708 - val_loss: 0.6555 - learning_rate: 2.5000e-05
+Epoch 20/20
+251/251 ━━━━━━━━━━━━━━━━━━━━ 0s 808ms/step - accuracy: 0.7964 - loss: 0.3459
+Epoch 20: val_accuracy improved from 0.77933 to 0.78782, saving model to best_model_lazy.keras
+251/251 ━━━━━━━━━━━━━━━━━━━━ 235s 916ms/step - accuracy: 0.7964 - loss: 0.3458 - val_accuracy: 0.7878 - val_loss: 0.6367 - learning_rate: 2.5000e-05
+Restoring model weights from the end of the best epoch: 20.
+
+
+63/63 - 25s - 398ms/step - accuracy: 0.7878 - loss: 0.6367
+WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. 
+Test Loss: 0.6366916298866272, Test Accuracy: 0.7878182530403137
